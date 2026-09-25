@@ -1,0 +1,89 @@
+# Caddy in front of Bagisto's PHP-FPM: TLS, static files, the front
+# controller and security headers (from Bagisto's production nginx
+# configuration).
+#
+# /var/www/bagisto/public is the `public` volume (a copy of the image's
+# public/, made by setup); public/storage is a symlink into the read-only
+# `storage` volume (uploads: storage/app/public). PHP runs in the `php`
+# container, where the files have the same paths.
+{
+	# No admin API: config is static, reloads happen by restarting the container.
+	admin off
+
+	servers {
+		# Behind a reverse proxy on a private network, log the real client IP
+		# (X-Forwarded-For) and pass X-Forwarded-Proto on to Laravel.
+		trusted_proxies static private_ranges
+		# Client IP = the right-most untrusted address (can't be spoofed).
+		trusted_proxies_strict
+	}
+}
+
+# Proxy headers that PHP apps read directly (order IPs, login logs...)
+# instead of REMOTE_ADDR: only the real client IP, never what the client
+# sent (php_fastcgi would pass the whole, forgeable X-Forwarded-For chain).
+(client_ip_headers) {
+	header_up X-Forwarded-For {client_ip}
+	header_up X-Real-IP {client_ip}
+	header_up -Client-Ip
+	header_up -Cf-Connecting-Ip
+	# Caddy doesn't reset X-Forwarded-Port (unlike -For/-Proto/-Host) for
+	# untrusted clients, and apps that trust Caddy would build URLs with a
+	# forged port; the port is in the Host header anyway.
+	header_up -X-Forwarded-Port
+}
+
+(bagisto) {
+	root * /var/www/bagisto/public
+	encode zstd gzip
+
+	request_body {
+		max_size {$UPLOAD_MAX_SIZE}
+	}
+
+	# One directive per header: in a single `header { }` block, Caddy applies
+	# the "?" (set if missing) fields together, only when all are missing.
+	header ?X-Content-Type-Options nosniff
+	header ?X-Frame-Options SAMEORIGIN
+	header ?Referrer-Policy strict-origin-when-cross-origin
+	header -Server
+	header -X-Powered-By
+
+	# Never served: dotfiles (but .well-known), PHP other than the front
+	# controller (none in uploads), and the web installer (setup installs).
+	@blocked {
+		path /.* */.* *.php /install /install/*
+		not path /.well-known/* /index.php
+	}
+	handle @blocked {
+		respond 404
+	}
+
+	@static path /build/* /themes/* /fonts/* /storage/* /favicon.ico
+	header @static Cache-Control "public, max-age=604800"
+
+	# Existing files are served; everything else (routes, image cache) goes
+	# to index.php.
+	handle {
+		php_fastcgi php:9000 {
+			env REMOTE_ADDR {client_ip}
+			import client_ip_headers
+		}
+		file_server
+	}
+}
+
+# Public site. SITE_ADDRESS is ":80" for plain HTTP (local, or behind another
+# proxy) or a domain name, which makes Caddy obtain and renew a certificate
+# automatically ("localhost" uses Caddy's internal CA).
+{$SITE_ADDRESS} {
+	import bagisto
+	log {
+		output stdout
+	}
+}
+
+# Internal-only site (port not published) for the container healthcheck.
+:8080 {
+	import bagisto
+}

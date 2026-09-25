@@ -1,0 +1,341 @@
+# Bagisto stack: Caddy (TLS, static files) + Bagisto on PHP-FPM (own image
+# from image/) with a queue worker and the Laravel scheduler + MariaDB, with
+# a setup job and optional backups and Mailpit.
+#
+# Quick start (development):
+#   cp .env.dev.example .env
+#   docker compose up -d --build
+#   docker compose logs -f setup   # wait for "==> Done"
+#
+# Production: start from .env.prod.example instead. See README.md.
+#
+# Required variables have no default: compose refuses to start without them.
+
+name: ${COMPOSE_PROJECT_NAME:-bagisto}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: ${LOG_MAX_SIZE:-10m}
+    max-file: "${LOG_MAX_FILE:-3}"
+
+# The Bagisto image (image/Dockerfile), shared by setup, php, worker,
+# scheduler and console.
+x-bagisto: &bagisto
+  image: ${BAGISTO_IMAGE:-bagisto-fpm}:${BAGISTO_VERSION:-2.4.12}-php${PHP_VERSION:-8.4}
+  build:
+    context: ./image
+    args:
+      BAGISTO_VERSION: ${BAGISTO_VERSION:-2.4.12}
+      BAGISTO_SHA256: ${BAGISTO_SHA256-f81ce2382c53bd4db5b30bde39001ded29ae9609fa13e674e0b7eabf46d27e2c}
+      PHP_VERSION: ${PHP_VERSION:-8.4}
+  logging: *logging
+
+x-bagisto-env: &bagisto-env
+  APP_NAME: ${BAGISTO_STORE_NAME:-Bagisto}
+  APP_ENV: production
+  APP_DEBUG: ${APP_DEBUG:-false}
+  APP_KEY: ${APP_KEY:?Set APP_KEY in .env (base64:... from openssl rand -base64 32)}
+  APP_URL: ${BAGISTO_URL:?Set BAGISTO_URL in .env (e.g. https://shop.example.com)}
+  # Other host names Bagisto answers to (comma separated), e.g. www.example.com.
+  BAGISTO_EXTRA_HOSTS: ${BAGISTO_EXTRA_HOSTS:-}
+  APP_ADMIN_URL: ${BAGISTO_ADMIN_PATH:?Set BAGISTO_ADMIN_PATH in .env (the admin's URL path)}
+  APP_TIMEZONE: ${TIMEZONE:-America/Santiago}
+  APP_LOCALE: ${BAGISTO_LOCALE:-es}
+  APP_FALLBACK_LOCALE: en
+  APP_CURRENCY: ${BAGISTO_CURRENCY:-CLP}
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: ${LOG_LEVEL:-warning}
+  DB_CONNECTION: mysql
+  DB_HOST: db
+  DB_PORT: 3306
+  DB_DATABASE: ${DB_NAME:-bagisto}
+  DB_USERNAME: ${DB_USER:-bagisto}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+  SESSION_DRIVER: database
+  CACHE_STORE: file
+  QUEUE_CONNECTION: database
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-tls}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  MAIL_FROM_ADDRESS: ${SMTP_FROM:-shop@example.com}
+  MAIL_FROM_NAME: ${SMTP_FROM_NAME:-Bagisto}
+  ADMIN_MAIL_ADDRESS: ${BAGISTO_ADMIN_EMAIL:?Set BAGISTO_ADMIN_EMAIL in .env}
+  ADMIN_MAIL_NAME: ${BAGISTO_ADMIN_NAME:-Admin}
+  CONTACT_MAIL_ADDRESS: ${SMTP_FROM:-shop@example.com}
+  CONTACT_MAIL_NAME: ${SMTP_FROM_NAME:-Bagisto}
+  PHP_MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-512M}
+  PHP_DISPLAY_ERRORS: ${PHP_DISPLAY_ERRORS:-Off}
+  PHP_MAX_EXECUTION_TIME: ${PHP_MAX_EXECUTION_TIME:-120}
+  PHP_OPCACHE_VALIDATE_TIMESTAMPS: ${PHP_OPCACHE_VALIDATE_TIMESTAMPS:-0}
+  UPLOAD_MAX_SIZE: ${UPLOAD_MAX_SIZE:-32M}
+  TZ: ${TIMEZONE:-America/Santiago}
+
+# Only setup fills the volumes (Docker copies the image's files into an
+# empty volume, and containers created together would race doing it).
+x-public: &public-volume
+  type: volume
+  source: public
+  target: /var/www/bagisto/public
+  volume:
+    nocopy: true
+x-storage: &storage-volume
+  type: volume
+  source: storage
+  target: /var/www/bagisto/storage
+  volume:
+    nocopy: true
+
+x-bagisto-volumes: &bagisto-volumes
+  - *public-volume
+  - *storage-volume
+  - ./config/php/php.ini:/usr/local/etc/php/conf.d/zz-stack.ini:ro
+  - ./scripts:/usr/local/share/stack/scripts:ro
+
+services:
+  db:
+    image: mariadb:${MARIADB_VERSION:-12.3}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-bagisto}
+      MARIADB_USER: ${DB_USER:-bagisto}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${DB_MEMORY_LIMIT:-1g}
+
+  # One-shot job: public files for Caddy, install (migrations, Bagisto's
+  # seeders, admin) or migrations, store settings. Safe to repeat.
+  setup:
+    <<: *bagisto
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      <<: *bagisto-env
+      BAGISTO_ADMIN_NAME: ${BAGISTO_ADMIN_NAME:-Admin}
+      BAGISTO_ADMIN_PASSWORD: ${BAGISTO_ADMIN_PASSWORD:?Set BAGISTO_ADMIN_PASSWORD in .env}
+      BAGISTO_COUNTRY: ${BAGISTO_COUNTRY:-CL}
+      BAGISTO_CITY: ${BAGISTO_CITY:-Santiago}
+      BAGISTO_TAX_RATE: ${BAGISTO_TAX_RATE-19}
+      BAGISTO_TAX_NAME: ${BAGISTO_TAX_NAME:-IVA}
+      BAGISTO_PRICES_INCLUDE_TAX: ${BAGISTO_PRICES_INCLUDE_TAX:-true}
+    volumes:
+      - public:/srv/public
+      - storage:/var/www/bagisto/storage
+      - ./config/php/php.ini:/usr/local/etc/php/conf.d/zz-stack.ini:ro
+      - ./scripts:/usr/local/share/stack/scripts:ro
+    entrypoint: ["sh", "/usr/local/share/stack/scripts/setup.sh"]
+    deploy:
+      resources:
+        limits:
+          memory: ${SETUP_MEMORY_LIMIT:-1g}
+
+  # PHP-FPM (internal port 9000): shop, admin and API.
+  php:
+    <<: *bagisto
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *bagisto-env
+      PHP_FPM_MAX_CHILDREN: ${PHP_FPM_MAX_CHILDREN:-10}
+      PHP_FPM_START_SERVERS: ${PHP_FPM_START_SERVERS:-2}
+      PHP_FPM_MIN_SPARE_SERVERS: ${PHP_FPM_MIN_SPARE_SERVERS:-1}
+      PHP_FPM_MAX_SPARE_SERVERS: ${PHP_FPM_MAX_SPARE_SERVERS:-4}
+      PHP_FPM_MAX_REQUESTS: ${PHP_FPM_MAX_REQUESTS:-500}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - *public-volume
+      - *storage-volume
+      - ./config/php/php.ini:/usr/local/etc/php/conf.d/zz-stack.ini:ro
+      - ./config/php/fpm-pool.conf:/usr/local/etc/php-fpm.d/zz-stack.conf:ro
+      - ./scripts:/usr/local/share/stack/scripts:ro
+    command: ["sh", "/usr/local/share/stack/scripts/run.sh", "php-fpm"]
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q php-fpm /proc/1/cmdline"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: ${PHP_MEMORY_LIMIT_CONTAINER:-1g}
+
+  # Queue worker (database queue): emails, imports, indexing (`default`) and
+  # the admin's order notifications (`broadcastable`).
+  worker:
+    <<: *bagisto
+    restart: unless-stopped
+    user: www-data
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *bagisto-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes: *bagisto-volumes
+    command: ["sh", "/usr/local/share/stack/scripts/run.sh", "php", "artisan", "queue:work", "--queue=default,broadcastable", "--sleep=3", "--tries=3", "--max-time=3600"]
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q queue:work /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: ${WORKER_MEMORY_LIMIT:-512m}
+
+  # Laravel scheduler: price and catalog rule indexes, invoice reminders,
+  # exchange rates, campaigns.
+  scheduler:
+    <<: *bagisto
+    restart: unless-stopped
+    user: www-data
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *bagisto-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes: *bagisto-volumes
+    command: ["sh", "/usr/local/share/stack/scripts/run.sh", "php", "artisan", "schedule:work"]
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q schedule:work /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: ${SCHEDULER_MEMORY_LIMIT:-512m}
+
+  caddy:
+    image: caddy:${CADDY_VERSION:-2.11}-alpine
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      php:
+        condition: service_healthy
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      UPLOAD_MAX_SIZE: ${UPLOAD_MAX_SIZE:-32M}
+    ports:
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-80}:80"
+      - "${HTTP_BIND:-127.0.0.1}:${HTTPS_PORT:-443}:443"
+      - "${HTTP_BIND:-127.0.0.1}:${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Same paths as in PHP (public/storage is a symlink into storage).
+      - <<: *public-volume
+        read_only: true
+      - <<: *storage-volume
+        read_only: true
+      # TLS certificates and keys (keep them: ACME rate limits).
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      # Laravel's /up (static-ish: no store page, which the full page cache
+      # would keep with the healthcheck's host).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/up"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: ${CADDY_MEMORY_LIMIT:-256m}
+
+  # Artisan (profile "tools"), as www-data, e.g.:
+  #   docker compose run --rm console indexer:index
+  console:
+    <<: *bagisto
+    profiles: ["tools"]
+    user: www-data
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *bagisto-env
+    volumes: *bagisto-volumes
+    entrypoint: ["sh", "/usr/local/share/stack/scripts/run.sh", "php", "artisan"]
+    command: ["about"]
+    deploy:
+      resources:
+        limits:
+          memory: ${CONSOLE_MEMORY_LIMIT:-1g}
+
+  # Optional (profile "backup"): database dump + storage every
+  # BACKUP_INTERVAL_HOURS, kept BACKUP_KEEP_DAYS days in the `backups` volume
+  # (overrides/local-dirs.yaml puts them in a local directory instead).
+  backup:
+    image: mariadb:${MARIADB_VERSION:-12.3}
+    profiles: ["backup"]
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: db
+      DB_NAME: ${DB_NAME:-bagisto}
+      DB_USER: ${DB_USER:-bagisto}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+    volumes:
+      # Read-write so `backup.sh restore` can put it back.
+      - storage:/data/storage
+      - backups:/backups
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+    entrypoint: ["bash", "/usr/local/bin/backup.sh"]
+    healthcheck:
+      test: ["CMD", "bash", "/usr/local/bin/backup.sh", "health"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 5m
+    deploy:
+      resources:
+        limits:
+          memory: ${BACKUP_MEMORY_LIMIT:-512m}
+
+  # Optional (profile "mailpit", development): catches all outgoing mail.
+  # Set SMTP_HOST=mailpit and SMTP_PORT=1025; web UI on MAILPIT_PORT.
+  mailpit:
+    image: axllent/mailpit:${MAILPIT_VERSION:-v1.31}
+    profiles: ["mailpit"]
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    ports:
+      - "${HTTP_BIND:-127.0.0.1}:${MAILPIT_PORT:-8025}:8025"
+
+volumes:
+  db_data:
+  public:
+  storage:
+  caddy_data:
+  caddy_config:
+  backups:
