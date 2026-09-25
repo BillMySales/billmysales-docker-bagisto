@@ -278,6 +278,9 @@ Notes:
   `trustProxies(at: '*')`): only Caddy reaches PHP-FPM, and it passes the
   real client IP and scheme, so links and secure cookies follow the public
   `https://` address behind Caddy and Traefik.
+- Bagisto answers an invalid CSRF token (and a refused host) with "500 Error
+  interno del servidor" (JSON or HTML), not 419 or 404. Shop pages carry the
+  token in `_token` form inputs, not in a `csrf-token` meta tag.
 - From inside the containers, the host machine is reachable as
   `host.docker.internal`.
 
@@ -340,6 +343,21 @@ What was checked for this stack (2026-09-25):
   directories (fresh install, backup).
 - Not tested: issuing a real Let's Encrypt certificate (needs a public
   domain), SMTPS/STARTTLS with a real provider, the online payment methods.
+
+Testing
+-------
+
+- Guest checkout through the shop's API, with a web session (cookies of a
+  shop page) and its `_token` in `X-CSRF-TOKEN`: `POST /api/checkout/cart`
+  (`product_id`, `quantity`), `/api/checkout/onepage/addresses` (`billing`,
+  `shipping`; `phone` required, no region list for Chile),
+  `/api/checkout/onepage/shipping-methods` (`shipping_method: free_free`),
+  `/api/checkout/onepage/payment-methods`
+  (`payment: {method: moneytransfer}`), then
+  `POST /api/checkout/onepage/orders`.
+- Products from code: `ProductRepository` `create`, then `update` with the
+  channel, locale, inventories and `tax_category_id`; then
+  `indexer:index`.
 
 Resource usage
 --------------

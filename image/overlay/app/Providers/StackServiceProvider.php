@@ -14,7 +14,8 @@ use Illuminate\Support\ServiceProvider;
  * site answers any host: a password reset requested with a forged Host
  * mailed a valid reset link to that host. Only the host of APP_URL, the
  * ones in BAGISTO_EXTRA_HOSTS (comma separated) and loopback names (the
- * containers' healthchecks) are accepted (others get a 404), and URLs
+ * containers' healthchecks) are accepted (others get Bagisto's error page,
+ * a 500: its handler renders every error but 401/403/404/503 so), and URLs
  * always start with APP_URL.
  */
 class StackServiceProvider extends ServiceProvider
