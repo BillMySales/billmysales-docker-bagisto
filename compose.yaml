@@ -94,6 +94,13 @@ x-bagisto-volumes: &bagisto-volumes
   - ./config/php/php.ini:/usr/local/etc/php/conf.d/zz-stack.ini:ro
   - ./scripts:/usr/local/share/stack/scripts:ro
 
+# Lets Bagisto reach services on the host (e.g. an app running locally) at
+# http://host.docker.internal:<port>, also on Linux. Every container that
+# runs Bagisto's code: its web process, setup, cron, workers, the console
+# (Docker Desktop resolves it anyway).
+x-host-access: &host-access
+  - "host.docker.internal:host-gateway"
+
 services:
   db:
     image: mariadb:${MARIADB_VERSION:-12.3}
@@ -134,6 +141,7 @@ services:
       BAGISTO_TAX_RATE: ${BAGISTO_TAX_RATE-19}
       BAGISTO_TAX_NAME: ${BAGISTO_TAX_NAME:-IVA}
       BAGISTO_PRICES_INCLUDE_TAX: ${BAGISTO_PRICES_INCLUDE_TAX:-true}
+    extra_hosts: *host-access
     volumes:
       - public:/srv/public
       - storage:/var/www/bagisto/storage
@@ -159,8 +167,7 @@ services:
       PHP_FPM_MIN_SPARE_SERVERS: ${PHP_FPM_MIN_SPARE_SERVERS:-1}
       PHP_FPM_MAX_SPARE_SERVERS: ${PHP_FPM_MAX_SPARE_SERVERS:-4}
       PHP_FPM_MAX_REQUESTS: ${PHP_FPM_MAX_REQUESTS:-500}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    extra_hosts: *host-access
     volumes:
       - *public-volume
       - *storage-volume
@@ -189,8 +196,7 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *bagisto-env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    extra_hosts: *host-access
     volumes: *bagisto-volumes
     command: ["sh", "/usr/local/share/stack/scripts/run.sh", "php", "artisan", "queue:work", "--queue=default,broadcastable", "--sleep=3", "--tries=3", "--max-time=3600"]
     healthcheck:
@@ -214,8 +220,7 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *bagisto-env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    extra_hosts: *host-access
     volumes: *bagisto-volumes
     command: ["sh", "/usr/local/share/stack/scripts/run.sh", "php", "artisan", "schedule:work"]
     healthcheck:
@@ -276,6 +281,7 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *bagisto-env
+    extra_hosts: *host-access
     volumes: *bagisto-volumes
     entrypoint: ["sh", "/usr/local/share/stack/scripts/run.sh", "php", "artisan"]
     command: ["about"]
