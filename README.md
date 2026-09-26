@@ -58,9 +58,9 @@ Production
 
 ```shell
 cp .env.prod.example .env
-# Fill in BAGISTO_URL, BAGISTO_ADMIN_PATH, SITE_ADDRESS, APP_KEY,
-# DB_PASSWORD, DB_ROOT_PASSWORD, BAGISTO_ADMIN_EMAIL, BAGISTO_ADMIN_PASSWORD
-# and the SMTP_* values.
+# Required: BAGISTO_URL, BAGISTO_ADMIN_PATH, SITE_ADDRESS, APP_KEY,
+# DB_PASSWORD, DB_ROOT_PASSWORD, BAGISTO_ADMIN_EMAIL, BAGISTO_ADMIN_PASSWORD.
+# Recommended: the SMTP_* values (without SMTP_HOST no emails are sent).
 docker compose up -d --build
 ```
 
@@ -257,9 +257,13 @@ Every variable is documented in `.env.prod.example`. Main groups:
 - **Credentials**: `APP_KEY`, `DB_PASSWORD`, `DB_ROOT_PASSWORD`,
   `BAGISTO_ADMIN_EMAIL`, `BAGISTO_ADMIN_PASSWORD` (required),
   `BAGISTO_ADMIN_NAME`.
-- **Store** (applied once): `BAGISTO_STORE_NAME`, `BAGISTO_LOCALE`,
-  `BAGISTO_CURRENCY`, `BAGISTO_COUNTRY`, `BAGISTO_CITY`, `BAGISTO_TAX_*`,
-  `BAGISTO_PRICES_INCLUDE_TAX`.
+- **Store** (Laravel's `APP_NAME`, `APP_LOCALE`, `APP_CURRENCY`, read on
+  every start: set them before the first install and don't change the locale
+  or the currency afterwards, the database must have them):
+  `BAGISTO_STORE_NAME` (also the channel's name on the first install),
+  `BAGISTO_LOCALE` (default locale), `BAGISTO_CURRENCY` (base currency).
+- **Store** (applied once): `BAGISTO_COUNTRY`, `BAGISTO_CITY`,
+  `BAGISTO_TAX_*`, `BAGISTO_PRICES_INCLUDE_TAX`.
 - **Versions**: `BAGISTO_VERSION`, `BAGISTO_SHA256`, `PHP_VERSION`,
   `MARIADB_VERSION`, `CADDY_VERSION`, ...
 - **Mail**: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`,
